@@ -1,46 +1,50 @@
 use async_trait::async_trait;
-use tokio::sync::broadcast;
-
-#[async_trait]
-pub trait Stopper {
-    //fn new(notify: broadcast::Receiver<()>) -> Self;
-    fn is_shutdown(&self) -> bool;
-    async fn recv(&mut self);
-}
+use std::sync::Arc;
+use tokio::sync::broadcast::error::SendError;
+use tokio::sync::{broadcast, Mutex};
 
 pub struct Shutdown {
-    /// `true` if the shutdown signal has been received
-    pub shutdown: bool,
-    /// The receive half of the channel used to listen for shutdown.
-    pub notify: broadcast::Receiver<()>,
+    is_shutdown: Mutex<bool>,
+    receiver: Mutex<broadcast::Receiver<()>>,
+    sender: broadcast::Sender<()>,
 }
 
-//#[async_trait]
 impl Shutdown {
-    // fn new(notify: broadcast::Receiver<()>) -> Shutdown {
-    //     Shutdown {
-    //         shutdown: false,
-    //         notify,
-    //     }
-    // }
-
-    /// Returns `true` if the shutdown signal has been received.
-    pub fn is_shutdown(&self) -> bool {
-        self.shutdown
+    pub fn new() -> Shutdown {
+        let (tx, rx) = broadcast::channel::<()>(32);
+        Shutdown {
+            is_shutdown: Mutex::new(false),
+            receiver: Mutex::new(rx),
+            sender: tx,
+        }
     }
 
-    /// Receive the shutdown notice, waiting if necessary.
-    pub async fn recv(&mut self) {
-        // If the shutdown signal has already been received, then return
-        // immediately.
-        if self.shutdown {
-            return;
-        }
+    pub fn get_receiver(&self) -> broadcast::Receiver<()> {
+        self.sender.subscribe()
+    }
 
-        // Cannot receive a "lag error" as only one value is ever sent.
-        let _ = self.notify.recv().await;
+    pub fn shutdown(&self) -> Result<usize, SendError<()>> {
+        self.sender.send(())
+    }
 
-        // Remember that the signal has been received.
-        self.shutdown = true;
+    pub async fn is_shutdown(&self) -> bool {
+        self.is_shutdown.lock().await.clone()
+    }
+
+    pub fn register(self: Arc<Self>) -> Arc<Self> {
+        tokio::spawn({
+            let s = Arc::clone(&self);
+            async move {
+                // wait for receive signal
+                let mut me = s.receiver.lock().await;
+                let _ = me.recv();
+
+                // update is_shutdown
+                let mut s = s.is_shutdown.lock().await;
+                *s = true
+            }
+        });
+
+        self
     }
 }

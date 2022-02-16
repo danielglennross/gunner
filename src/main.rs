@@ -15,18 +15,18 @@ async fn main() {
 
     let runner = handler::TestRunner::new(1, handler);
 
-    let (tx, rx) = broadcast::channel::<()>(1);
+    let (tx, rx) = broadcast::channel::<()>(32);
 
-    let shutdown: Arc<Mutex<shutdown::Shutdown>> = Arc::new(Mutex::new(shutdown::Shutdown {
-        shutdown: false,
-        notify: rx,
-    }));
+    // let shutdown: Arc<Mutex<shutdown::Shutdown>> = Arc::new(Mutex::new(shutdown::Shutdown {
+    //     shutdown: false,
+    //     notify: rx,
+    // }));
 
-    let result = runner.run(shutdown).await;
+    let result = runner.run().await;
 
     result.expect("oops something went wrong");
 
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    //tokio::time::sleep(Duration::from_secs(5)).await;
 
-    tx.send(()).expect("failed to send shutdown signal");
+    //tx.send(()).expect("failed to send shutdown signal");
 }
