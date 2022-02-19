@@ -1,10 +1,7 @@
 mod internal;
 
 use internal::{handler, shutdown};
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::io;
-use tokio::sync::{broadcast, Mutex};
 
 #[tokio::main]
 async fn main() {
@@ -15,18 +12,11 @@ async fn main() {
 
     let runner = handler::TestRunner::new(1, handler);
 
-    let (tx, rx) = broadcast::channel::<()>(32);
+    let shutdown = shutdown::Shutdown::new();
 
-    // let shutdown: Arc<Mutex<shutdown::Shutdown>> = Arc::new(Mutex::new(shutdown::Shutdown {
-    //     shutdown: false,
-    //     notify: rx,
-    // }));
+    let result = runner.run(&shutdown).await;
 
-    let result = runner.run().await;
+    result.expect("oops something went wrong, runner.run");
 
-    result.expect("oops something went wrong");
-
-    //tokio::time::sleep(Duration::from_secs(5)).await;
-
-    //tx.send(()).expect("failed to send shutdown signal");
+    shutdown.register_shutdown().await;
 }
