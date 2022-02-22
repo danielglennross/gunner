@@ -1,11 +1,13 @@
+use async_trait::async_trait;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::{broadcast, mpsc};
 use tokio::{io, signal};
 
-pub struct Shutdown {
+pub struct Shutdown<'a> {
     sender: broadcast::Sender<()>,
     waiter: mpsc::Receiver<()>,
     sender_waiter: mpsc::Sender<()>,
+    interrupter: Box<dyn Interrupter + 'a>,
 }
 
 pub struct Signaler {
@@ -16,14 +18,35 @@ pub struct Signaler {
     sender_waiter: mpsc::Sender<()>,
 }
 
-impl Shutdown {
-    pub fn new() -> Shutdown {
+#[async_trait]
+pub trait Interrupter {
+    async fn wait(&self) -> io::Result<()>;
+}
+
+pub struct CtrlInterrupter {}
+
+impl CtrlInterrupter {
+    pub fn new() -> CtrlInterrupter {
+        CtrlInterrupter {}
+    }
+}
+
+#[async_trait]
+impl Interrupter for CtrlInterrupter {
+    async fn wait(&self) -> io::Result<()> {
+        signal::ctrl_c().await
+    }
+}
+
+impl<'a> Shutdown<'a> {
+    pub fn new(interrupter: Box<impl Interrupter + 'a>) -> Shutdown<'a> {
         let (send, recv) = mpsc::channel::<()>(1);
         let (tx, _) = broadcast::channel::<()>(32);
         Shutdown {
             sender: tx,
             waiter: recv,
             sender_waiter: send,
+            interrupter,
         }
     }
 
@@ -33,12 +56,10 @@ impl Shutdown {
     }
 
     pub async fn register_shutdown(mut self) -> () {
-        match signal::ctrl_c().await {
-            Ok(()) => {}
-            Err(err) => {
-                println!("Unable to listen for shutdown signal: {}", err);
-            }
-        }
+        self.interrupter
+            .wait()
+            .await
+            .expect("Error waiting for interrupt");
 
         // send shutdown signal
         println!("waiting for shutdown...");
@@ -70,9 +91,7 @@ impl Signaler {
         }
 
         let _ = self.receiver.recv().await;
-
         self.is_shutdown = true;
-
         Ok(())
     }
 }
