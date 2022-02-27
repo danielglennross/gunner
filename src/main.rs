@@ -1,7 +1,8 @@
 mod internal;
 
+use crate::internal::{producer, RunEvents};
+use internal::{consumer, shutdown};
 use std::sync::Arc;
-use internal::{handler, shutdown};
 use tokio::io;
 
 #[tokio::main]
@@ -11,20 +12,32 @@ async fn main() {
         Ok(())
     };
 
-    let runner = handler::TestRunner::new(1, handler);
+    let rate_per_sec = 1.0;
+
+    let ticker = producer::TestTicker::new(rate_per_sec);
+
+    let runner = consumer::TestRunner::new(1, handler);
 
     let ctrl_interrupter = Box::new(shutdown::CtrlInterrupter::new());
 
     let shutdown = shutdown::Shutdown::new(ctrl_interrupter);
 
-    let run_events = handler::RunEvents{
+    let run_events = RunEvents {
         on_ticker_killed: Arc::new(Box::new(|| {})),
-        on_processor_killed: Arc::new(Box::new(|| {}))
+        on_processor_killed: Arc::new(Box::new(|_| {})),
     };
 
-    let result = runner.run(&shutdown, run_events).await;
+    let (tx, rx) = async_channel::unbounded::<bool>();
 
-    result.expect("oops something went wrong, runner.run");
+    ticker
+        .run(tx, &shutdown, &run_events)
+        .await
+        .expect("oops something went wrong, ticker.run");
+
+    runner
+        .run(rx, &shutdown, &run_events)
+        .await
+        .expect("oops something went wrong, runner.run");
 
     shutdown.register_shutdown().await;
 }

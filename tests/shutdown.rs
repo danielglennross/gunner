@@ -1,5 +1,7 @@
+use gunner::internal::{
+    consumer, producer, shutdown, ProcessorKilledCallback, RunEvents, TickerKilledCallback,
+};
 use std::sync::{Arc, Mutex};
-use gunner::internal::{handler, shutdown};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -30,13 +32,13 @@ struct TestRunEvents {
 
 impl TestRunEvents {
     pub fn new() -> TestRunEvents {
-        TestRunEvents{
+        TestRunEvents {
             ticker_kill_count: Arc::new(Mutex::new(0)),
             processor_kill_count: Arc::new(Mutex::new(0)),
         }
     }
 
-    pub fn on_ticker_killed(&self) -> Arc<handler::RunCallback> {
+    pub fn on_ticker_killed(&self) -> Arc<TickerKilledCallback> {
         let c = self.ticker_kill_count.clone();
         Arc::new(Box::new(move || {
             let mut count = c.lock().unwrap();
@@ -44,9 +46,9 @@ impl TestRunEvents {
         }))
     }
 
-    pub fn on_processor_killed(&self) -> Arc<handler::RunCallback> {
+    pub fn on_processor_killed(&self) -> Arc<ProcessorKilledCallback> {
         let c = self.processor_kill_count.clone();
-        Arc::new(Box::new(move || {
+        Arc::new(Box::new(move |_| {
             let mut count = c.lock().unwrap();
             *count += 1;
         }))
@@ -68,24 +70,36 @@ async fn graceful_shutdown() {
         Ok(())
     };
 
-    let processor_count: u8 = 1;
+    let rate_per_sec = 1.0;
 
-    let runner = handler::TestRunner::new(processor_count, handler);
+    let processor_count: u8 = 2;
 
-    let count_down_interrupter = Box::new(CountDownInterrupter::new(5_000));
+    let ticker = producer::TestTicker::new(rate_per_sec);
+
+    let runner = consumer::TestRunner::new(processor_count, handler);
+
+    let count_down_interrupter = Box::new(CountDownInterrupter::new(1_000));
 
     let shutdown = shutdown::Shutdown::new(count_down_interrupter);
 
     let test_run_events = TestRunEvents::new();
 
-    let run_events = handler::RunEvents{
+    let run_events = RunEvents {
         on_ticker_killed: test_run_events.on_ticker_killed(),
-        on_processor_killed: test_run_events.on_processor_killed()
+        on_processor_killed: test_run_events.on_processor_killed(),
     };
 
-    let result = runner.run(&shutdown, run_events).await;
+    let (tx, rx) = async_channel::unbounded::<bool>();
 
-    result.expect("oops something went wrong, runner.run");
+    ticker
+        .run(tx, &shutdown, &run_events)
+        .await
+        .expect("oops something went wrong, ticker.run");
+
+    runner
+        .run(rx, &shutdown, &run_events)
+        .await
+        .expect("oops something went wrong, runner.run");
 
     shutdown.register_shutdown().await;
 
