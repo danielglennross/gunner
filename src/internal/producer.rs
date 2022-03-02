@@ -1,7 +1,7 @@
 use super::shutdown;
 use crate::internal::producer::ConstantRateType::{LessThanOnePerSec, MoreThanOnePerSec};
 use crate::internal::RunEvents;
-use async_channel::Sender;
+use async_channel::{Receiver, Sender};
 use std::time::Duration;
 use tokio::io;
 
@@ -17,6 +17,7 @@ impl TestTicker {
     pub async fn run(
         &self,
         tx: Sender<bool>,
+        recv: Receiver<bool>,
         shutdown: &shutdown::Shutdown<'_>,
         run_events: &RunEvents,
     ) -> io::Result<()> {
@@ -29,10 +30,11 @@ impl TestTicker {
             while !signaler.is_shutdown() {
                 tokio::select! {
                     _ = signaler.recv() => {
+                        recv.close();
                         break
                     }
                     _ = interval.tick() => {
-                        for _ in 0..rate_calculator.iter() {
+                        for _ in 0..rate_calculator.next_sec() {
                             tx.send(true).await.expect("error sending on channel");
                         }
                     }
@@ -40,7 +42,7 @@ impl TestTicker {
             }
 
             // The shutdown signal has been received.
-            println!("exiting worker sender");
+            println!("exiting producer");
             ticker_killed();
         });
 
@@ -50,7 +52,7 @@ impl TestTicker {
 
 trait RateCalculator {
     fn new(rate_per_sec: f32) -> Self;
-    fn iter(&mut self) -> i32;
+    fn next_sec(&mut self) -> i32;
 }
 
 enum ConstantRateType {
@@ -78,7 +80,7 @@ impl RateCalculator for ConstantRateCalculator {
         }
     }
 
-    fn iter(&mut self) -> i32 {
+    fn next_sec(&mut self) -> i32 {
         match &mut self.rate_type {
             ConstantRateType::MoreThanOnePerSec { count_per_sec } => *count_per_sec,
             ConstantRateType::LessThanOnePerSec {
@@ -94,5 +96,37 @@ impl RateCalculator for ConstantRateCalculator {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    macro_rules! constant_rate_calc_tests {
+        ($($name:ident: $value:expr,)*) => {
+        $(
+            #[test]
+            fn $name() {
+                let (input, expected) = $value;
+                let mut rate_calc = ConstantRateCalculator::new(input);
+                let result: Vec<_> = (0..10).into_iter().map(|_| rate_calc.next_sec()).collect();
+                assert_eq!(expected, result);
+            }
+        )*
+        }
+    }
+
+    constant_rate_calc_tests! {
+        // more than one per sec
+        one_per_sec: (1.0, vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+        ten_per_sec: (10.0, vec![10, 10, 10, 10, 10, 10, 10, 10, 10, 10]),
+        one_hundred_per_sec: (100.0, vec![100, 100, 100, 100, 100, 100, 100, 100, 100, 100]),
+
+        // less than one per sec
+        zero_per_sec: (0.0, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        half_per_sec: (0.5, vec![0, 1, 0, 1, 0, 1, 0, 1, 0, 1]),
+        third_per_sec: (0.33, vec![0, 0, 1, 0, 0, 1, 0, 0, 1, 0]),
+        quater_per_sec: (0.25, vec![0, 0, 0, 1, 0, 0, 0, 1, 0, 0]),
     }
 }

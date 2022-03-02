@@ -2,28 +2,9 @@ use gunner::internal::{
     consumer, producer, shutdown, ProcessorKilledCallback, RunEvents, TickerKilledCallback,
 };
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use async_trait::async_trait;
-use gunner::internal::shutdown::Interrupter;
+use gunner::internal::shutdown::CountDownInterrupter;
 use tokio::io;
-
-struct CountDownInterrupter {
-    ms: u64,
-}
-
-impl CountDownInterrupter {
-    pub fn new(ms: u64) -> CountDownInterrupter {
-        CountDownInterrupter { ms }
-    }
-}
-
-#[async_trait]
-impl Interrupter for CountDownInterrupter {
-    async fn wait(&self) -> io::Result<()> {
-        Ok(tokio::time::sleep(Duration::from_millis(self.ms)).await)
-    }
-}
 
 struct TestRunEvents {
     ticker_kill_count: Arc<Mutex<u8>>,
@@ -80,7 +61,7 @@ async fn graceful_shutdown() {
 
     let count_down_interrupter = Box::new(CountDownInterrupter::new(1_000));
 
-    let shutdown = shutdown::Shutdown::new(count_down_interrupter);
+    let shutdown = shutdown::Shutdown::new(vec![count_down_interrupter]);
 
     let test_run_events = TestRunEvents::new();
 
@@ -92,7 +73,7 @@ async fn graceful_shutdown() {
     let (tx, rx) = async_channel::unbounded::<bool>();
 
     ticker
-        .run(tx, &shutdown, &run_events)
+        .run(tx, rx.clone(), &shutdown, &run_events)
         .await
         .expect("oops something went wrong, ticker.run");
 

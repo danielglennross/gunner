@@ -20,7 +20,9 @@ async fn main() {
 
     let ctrl_interrupter = Box::new(shutdown::CtrlInterrupter::new());
 
-    let shutdown = shutdown::Shutdown::new(ctrl_interrupter);
+    let count_down_interrupter = Box::new(shutdown::CountDownInterrupter::new(5_000));
+
+    let shutdown = shutdown::Shutdown::new(vec![ctrl_interrupter, count_down_interrupter]);
 
     let run_events = RunEvents {
         on_ticker_killed: Arc::new(Box::new(|| {})),
@@ -30,7 +32,7 @@ async fn main() {
     let (tx, rx) = async_channel::unbounded::<bool>();
 
     ticker
-        .run(tx, &shutdown, &run_events)
+        .run(tx, rx.clone(), &shutdown, &run_events)
         .await
         .expect("oops something went wrong, ticker.run");
 

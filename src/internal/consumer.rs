@@ -1,6 +1,4 @@
-use super::shutdown;
-
-use crate::internal::RunEvents;
+use crate::internal::{shutdown, RunEvents};
 use async_channel::Receiver;
 use tokio::io;
 
@@ -27,33 +25,31 @@ impl TestRunner {
     ) -> io::Result<()> {
         for i in 0..self.concurrency {
             let rx = rx.clone();
-            let h = self.handler;
-            let mut signaler = shutdown.get_signaler();
+            let signaler = shutdown.get_signaler();
             let processor_killed = run_events.on_processor_killed.clone();
+            let h = self.handler;
 
             tokio::spawn(async move {
-                while !signaler.is_shutdown() {
-                    tokio::select! {
-                        _ = signaler.recv() => {
-                            break
+                // take ownership of signaler
+                // so shutdown knows when this goes out of scope when the thread exists
+                let _ = signaler;
+
+                loop {
+                    let v = rx.recv().await;
+                    match v {
+                        Ok(v) => {
+                            println!("value is: {}", v);
+                            h().expect("failed processing")
                         }
-                        v = rx.recv() => {
-                            match v {
-                                Ok(v) => {
-                                    println!("value is: {}", v);
-                                    h().expect("failed processing")
-                                },
-                                Err(async_channel::RecvError) => {
-                                   println!("channel closed")
-                                },
-                            }
+                        Err(async_channel::RecvError) => {
+                            println!("channel closed");
+                            break;
                         }
-                        else => continue
                     }
                 }
 
                 // The shutdown signal has been received.
-                println!("exiting worker {}", i);
+                println!("exiting consumer {}", i);
                 processor_killed(i);
             });
         }

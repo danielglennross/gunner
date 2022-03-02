@@ -8,4 +8,5 @@ edition = "2018"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 async-trait = { version = "0.1.52" }
-async-channel = {version = "1.6.1"}
+async-channel = { version = "1.6.1" }
+futures = { version = "0.3.21" }
