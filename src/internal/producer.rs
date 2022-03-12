@@ -1,6 +1,5 @@
+use std::sync::Arc;
 use super::shutdown;
-use crate::internal::producer::ConstantRateType::{LessThanOnePerSec, MoreThanOnePerSec};
-use crate::internal::RunEvents;
 use async_channel::{Receiver, Sender};
 use std::time::Duration;
 use tokio::io;
@@ -19,12 +18,12 @@ impl TestTicker {
         tx: Sender<bool>,
         recv: Receiver<bool>,
         shutdown: &shutdown::Shutdown<'_>,
-        run_events: &RunEvents,
+        producer_events: &ProducerEvents,
     ) -> io::Result<()> {
-        let ticker_killed = run_events.on_ticker_killed.clone();
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let ticker_killed = producer_events.on_producer_killed.clone();
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
         let mut signaler = shutdown.get_signaler();
-        let mut rate_calculator: ConstantRateCalculator = RateCalculator::new(self.rate_per_sec);
+        let mut rate_calculator: RegularRateCalculator = RateCalculator::new(self.rate_per_sec);
 
         tokio::spawn(async move {
             while !signaler.is_shutdown() {
@@ -50,51 +49,40 @@ impl TestTicker {
     }
 }
 
+pub type ProducerKilledCallback = Box<dyn Fn() + Send + Sync>;
+
+pub struct ProducerEvents {
+    pub on_producer_killed: Arc<ProducerKilledCallback>,
+}
+
 trait RateCalculator {
     fn new(rate_per_sec: f32) -> Self;
     fn next_sec(&mut self) -> i32;
 }
 
-enum ConstantRateType {
-    MoreThanOnePerSec { count_per_sec: i32 },
-    LessThanOnePerSec { count: i32, count_reset_index: i32 },
+struct RegularRateCalculator {
+    acc: f32,
+    count_per_sec: f32,
 }
 
-struct ConstantRateCalculator {
-    rate_type: ConstantRateType,
-}
-
-impl RateCalculator for ConstantRateCalculator {
-    fn new(rate_per_sec: f32) -> ConstantRateCalculator {
-        ConstantRateCalculator {
-            rate_type: if rate_per_sec > 1.0 {
-                MoreThanOnePerSec {
-                    count_per_sec: rate_per_sec.round() as i32,
-                }
-            } else {
-                LessThanOnePerSec {
-                    count: 0,
-                    count_reset_index: (1.0 / rate_per_sec).round() as i32,
-                }
-            },
+impl RateCalculator for RegularRateCalculator {
+    fn new(rate_per_sec: f32) -> RegularRateCalculator {
+        RegularRateCalculator {
+            acc: 0.0,
+            count_per_sec: rate_per_sec,
         }
     }
 
     fn next_sec(&mut self) -> i32 {
-        match &mut self.rate_type {
-            ConstantRateType::MoreThanOnePerSec { count_per_sec } => *count_per_sec,
-            ConstantRateType::LessThanOnePerSec {
-                count,
-                count_reset_index,
-            } => {
-                *count += 1;
-                if *count == *count_reset_index {
-                    *count = 0;
-                    1
-                } else {
-                    0
-                }
-            }
+        let chunk = self.count_per_sec as f32 / 10.0;
+        let chunk_round = (chunk * 10_000_000.0).round() / 10_000_000.0;
+        self.acc += chunk_round;
+        if self.acc >= 1.0 {
+            let r = self.acc;
+            self.acc = r.rem_euclid(r.floor());
+            r.floor() as i32
+        } else {
+            0
         }
     }
 }
@@ -103,30 +91,35 @@ impl RateCalculator for ConstantRateCalculator {
 mod tests {
     use super::*;
 
-    macro_rules! constant_rate_calc_tests {
+    macro_rules! regular_rate_calc_tests {
         ($($name:ident: $value:expr,)*) => {
         $(
             #[test]
             fn $name() {
-                let (input, expected) = $value;
-                let mut rate_calc = ConstantRateCalculator::new(input);
-                let result: Vec<_> = (0..10).into_iter().map(|_| rate_calc.next_sec()).collect();
+                let (count_per_sec, iter, expected) = $value;
+                let mut rate_calc = RegularRateCalculator::new(count_per_sec);
+                let result: Vec<_> = (0..iter).into_iter().map(|_| rate_calc.next_sec()).collect();
                 assert_eq!(expected, result);
             }
         )*
         }
     }
 
-    constant_rate_calc_tests! {
+    regular_rate_calc_tests! {
         // more than one per sec
-        one_per_sec: (1.0, vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-        ten_per_sec: (10.0, vec![10, 10, 10, 10, 10, 10, 10, 10, 10, 10]),
-        one_hundred_per_sec: (100.0, vec![100, 100, 100, 100, 100, 100, 100, 100, 100, 100]),
+        one_per_sec: (1.0, 10, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+        ten_per_sec: (10.0, 10, vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+        fifteen_per_sec: (15.0, 10, vec![1, 2, 1, 2, 1, 2, 1, 2, 1, 2]),
+        twentytwo_per_sec: (22.0, 10, vec![2, 2, 2, 2, 3, 2, 2, 2, 2, 3]),
+        one_hundred_per_sec: (100.0, 10, vec![10, 10, 10, 10, 10, 10, 10, 10, 10, 10]),
 
         // less than one per sec
-        zero_per_sec: (0.0, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-        half_per_sec: (0.5, vec![0, 1, 0, 1, 0, 1, 0, 1, 0, 1]),
-        third_per_sec: (0.33, vec![0, 0, 1, 0, 0, 1, 0, 0, 1, 0]),
-        quater_per_sec: (0.25, vec![0, 0, 0, 1, 0, 0, 0, 1, 0, 0]),
+        zero_per_sec: (0.0, 10, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        half_per_sec: (0.5, 20, seq_with_1_at_index(19)),
+        third_per_sec: (0.333, 31, seq_with_1_at_index(30)),
+    }
+
+    fn seq_with_1_at_index(i: usize) -> Vec<i32> {
+        vec![0].into_iter().cycle().take(i).chain(vec![1].into_iter()).collect()
     }
 }

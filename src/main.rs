@@ -1,9 +1,11 @@
 mod internal;
 
-use crate::internal::{producer, RunEvents};
+use crate::internal::{producer};
 use internal::{consumer, shutdown};
 use std::sync::Arc;
 use tokio::io;
+use crate::consumer::ConsumerEvents;
+use crate::producer::ProducerEvents;
 
 #[tokio::main]
 async fn main() {
@@ -24,20 +26,24 @@ async fn main() {
 
     let shutdown = shutdown::Shutdown::new(vec![ctrl_interrupter, count_down_interrupter]);
 
-    let run_events = RunEvents {
-        on_ticker_killed: Arc::new(Box::new(|| {})),
-        on_processor_killed: Arc::new(Box::new(|_| {})),
+    let producer_events = ProducerEvents {
+        on_producer_killed: Arc::new(Box::new(|| {})),
+    };
+
+    let consumer_events = ConsumerEvents {
+        on_worker_killed: Arc::new(Box::new(|_| {})),
+        on_work_handled: Arc::new(Box::new(|_, _| {})),
     };
 
     let (tx, rx) = async_channel::unbounded::<bool>();
 
     ticker
-        .run(tx, rx.clone(), &shutdown, &run_events)
+        .run(tx, rx.clone(), &shutdown, &producer_events)
         .await
         .expect("oops something went wrong, ticker.run");
 
     runner
-        .run(rx, &shutdown, &run_events)
+        .run(rx, &shutdown, &consumer_events)
         .await
         .expect("oops something went wrong, runner.run");
 
